@@ -1,15 +1,32 @@
 import { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
-import { Link, Redirect } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
+import { StyleSheet, Text, View, ActivityIndicator, Platform } from 'react-native';
+import { Redirect } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 
 
-get_auth_token = async() {
+export const get_auth_token = async() => {
     if (Platform.OS == "web") {
-        // Использовать localStorage или что-то ещё
+        return localStorage.getItem("auth");
     }
-    return await SecureStore.getItemAsync("auth");
+    return await SecureStore.getItemAsync("auth") || null;
+};
+
+
+export const set_auth_token = async(token_val) => {
+    if (Platform.OS == "web") {
+       localStorage.setItem("auth", token_val);
+       return;
+    }
+    await SecureStore.setItemAsync("auth", token_val);
+};
+
+
+export const remove_auth_token = async() => {
+    if (Platform.OS == "web") {
+        localStorage.removeItem("auth");
+        return;
+    }
+    await SecureStore.deleteItemAsync("auth");
 };
 
 
@@ -19,12 +36,14 @@ export default function App() {
     const [is_loading, set_loading] = useState(true);
     const [repeat_counter, set_rp_counter] = useState(2);
     const get_auth_status = async(show_indicator=false) => {
+        let val = await get_auth_token();
+        let header = val == null ? {} : {"Authorization": "Token " + val};
         try {
             show_indicator ? set_loading(true) : null;
-            const p = await fetch("http://172.20.113.198:8000/msg/check-auth/", {
+            const p = await fetch("http://10.133.222.198:8000/msg/check-auth/", {
                 method: "GET",
                 signal: AbortSignal.timeout(5000),
-                headers: {"Authorization": "Token " + get_auth_token()}
+                headers: header
             });
             let data = await p.json();
             set_is_auth(data["status"]);
@@ -67,9 +86,9 @@ export default function App() {
             ) : (
                  error_state == null ? (
                     is_auth ? (
-                        <Redirect href="/Dialogs" />
+                        <Redirect href="/dialogs" />
                     ) : (
-                        <Redirect href="/Login" />
+                        <Redirect href="/login/login_form" />
                     )
                 ) : <Text>Ошибка соединения с сервером, попытка {repeat_counter}</Text>
             )
@@ -77,6 +96,7 @@ export default function App() {
     </View>
   )
 };
+
 
 const styles = StyleSheet.create({
   container: {
