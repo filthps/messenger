@@ -8,7 +8,7 @@ export const host = "http://10.100.199.198:8000";
 
 export const get_auth_token = async() => {
     if (Platform.OS == "web") {
-        return localStorage.getItem("auth");
+        return await localStorage.getItem("auth");
     }
     return await SecureStore.getItemAsync("auth") || null;
 };
