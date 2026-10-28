@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ActivityIndicator, FlatList, Pressable, Image, TouchableOpacity, Modal, Button } from 'react-native';
-import { useRouter, Link } from 'expo-router';
+import { useRouter, Link, useNavigation } from 'expo-router';
 import { host, get_auth_token } from './index';
 
 
@@ -157,7 +157,6 @@ export default function Dialogs() {
     }, [])
   return (
       <>
-      <View style={styles.top_bar}></View>
           {load ? (
                 <View style={styles.container}>
                   <ActivityIndicator />
@@ -182,7 +181,6 @@ export default function Dialogs() {
                         </View>
                         )
         )}
-    <View style={styles.bottom_bar}></View>
     </>
   )
 }
@@ -211,20 +209,6 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
     },
-    top_bar: {
-        backgroundColor: '#CCC',
-        flexDirection: 'row',
-        alignItems: 'stretch',
-        justifyContent: 'flex-start',
-        height: 70,
-    },
-    bottom_bar: {
-        backgroundColor: '#CCC',
-        flexDirection: 'row',
-        alignItems: 'stretch',
-        justifyContent: 'flex-end',
-        height: 120,
-        },
     thumbs_list: {
         flexDirection: 'row',
         alignItems: 'center',
