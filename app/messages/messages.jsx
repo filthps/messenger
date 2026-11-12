@@ -6,23 +6,38 @@ import { useRouter, Link, useLocalSearchParams } from 'expo-router';
 import { Checkbox } from 'expo-checkbox';
 import * as Clipboard from 'expo-clipboard';
 import { host, get_auth_token } from './index';
-import { encrypt_message_item, decrypt_message_item, get_keys, get_current_key_tail, generate_key, is_valid_key_and_tail } from './encryption';
+import { encrypt_message_item, decrypt_message_item, 
+    get_keys, get_current_key_tail, generate_key, is_valid_key_and_tail, set_current_active_key, add_key, remove_current_active_key } from './encryption';
+
+let add_and_check_exists_key;
 
 
-function KeyListItem({item}) {
+function KeyListItem({item, set_show_add_key, set_placeholder}) {
     let key_is_banned = item["is_banned"] || false;
     let key_is_undefined = item["key_undefined"] || false;
     let key_is_selected = item["is_current_key"] || false;
     let key = item["end"];
-    let key_author = item["creator"];
+    let key_author = item["creator_username"];
     let create_date = new Date(item["create_date"]);
     let expire_date = item["expire"] == null ? null : new Date(item["expire"]);
     let key_is_out_of_date = expire_date == null ? false : new Date() > expire_date;
     let create_time_str = create_date.getUTCFullYear() + "." + create_date.getUTCMonth() + 1 + "." + create_date.getUTCDate();
 
-    const fill_exists_key = async(tail) => {  // Заполнить существующий ключ из списка (по кнопке)
-        console.log(tail);
+
+
+    const fill_exists_key = (tail) => {  // Заполнить существующий ключ из списка (по кнопке)
+        set_placeholder('********-****-4***-****-*****' + tail);
+        set_show_add_key(true);
     };
+
+    const set_active = async(tail) => {
+        add_and_check_exists_key("set_active", tail);
+    };
+
+    const set_inactive = async(tail) => {
+        add_and_check_exists_key("set_inactive", tail);
+    };
+
 
     return (
         <>
@@ -43,21 +58,21 @@ function KeyListItem({item}) {
                             <Button title="Удалить" style={styles.keys_table_inner_last} />
                         </>
                     ) : (
-                        key_is_selected ? (
+                        key_is_undefined ? (
                             <>
-                                <Text style={styles.keys_table_row_inner_text}>Текущий</Text>
-                                <Button title="Отключить" style={styles.keys_table_inner_last} />
+                                <Text style={styles.keys_table_row_inner_text}>Не готов</Text>
+                                <Button title="Заполнить" onPress={() => fill_exists_key(key)} style={styles.keys_table_inner_last} />
                             </>
                         ) : (
-                            key_is_undefined ? (
+                            key_is_selected ? (
                                 <>
-                                    <Text style={styles.keys_table_row_inner_text}>Не готов</Text>
-                                    <Button title="Заполнить" onPress={async() => await fill_exists_key(key)} style={styles.keys_table_inner_last} />
+                                    <Text style={styles.keys_table_row_inner_text}>Установлен</Text>
+                                    <Button title="Отключить" style={styles.keys_table_inner_last} onPress={async() => {set_inactive(key)}} />
                                 </>
                             ) : (
                                 <>
                                     <Text style={styles.keys_table_row_inner_text}>Готов</Text>
-                                    <Button title="Установить" style={styles.keys_table_inner_last} />
+                                    <Button title="Установить" style={styles.keys_table_inner_last} onPress={async() => {set_active(key)}} />
                                 </>
                             )
                         )
@@ -101,6 +116,7 @@ function Message({item, next_item}) {
     let show_year_block = next_message_month_num == 11 & current_message_month_num == 0 ? true : false;
     let show_month_block = current_message_month_num - next_message_month_num > 0 ? true : false;
     let show_day_block = days_between_message > 0 ? true : false;
+    let msg_time_str = "" + time.getUTCHours() + ":" + time.getUTCMinutes();
     return (
             <>
                 {is_my_message ? (
@@ -117,6 +133,14 @@ function Message({item, next_item}) {
                         ) : null}
                         <View style={styles.message_body_left}>
                             <Text>{raw}</Text>
+                            <View style = {styles.msg_bottom}>
+                                {key_tail == null ? (
+                                    <Text style={styles.msg_bottom_text}>Не зашифровано</Text>
+                                ) : (
+                                    <Text style={styles.msg_bottom_text}>#{key_tail}</Text>
+                                )}
+                                <Text style={styles.msg_bottom_text}>{msg_time_str}</Text>
+                            </View>
                         </View>
                     </View>
                 ) : (
@@ -133,6 +157,14 @@ function Message({item, next_item}) {
                         ) : null}
                         <View style={styles.message_body_right}>
                             <Text>{raw}</Text>
+                            <View style = {styles.msg_bottom}>
+                                <Text style={styles.msg_bottom_text}>{msg_time_str}</Text>
+                                {key_tail == null ? (
+                                    <Text style={styles.msg_bottom_text}>Не зашифровано</Text>
+                                ) : (
+                                    <Text style={styles.msg_bottom_text}>#{key_tail}</Text>
+                                )}
+                            </View>
                         </View>
                     </View>
                 )}
@@ -160,38 +192,398 @@ export default function Messages() {  // В обычном react-native dialog-i
     const [draft, change_draft] = useState("");  // Черновик сообщения
     const [is_active_send, set_is_active_send_msg] = useState(false);
     const [error_send, set_send_with_error] = useState(false);
-    const help_block_animation_move = useRef(new Animated.Value(-50 - StatusBar.currentHeight)).current;  // Используем useRef, чтобы значение сохранялось между рендерами
-    const help_block_button_animation = useRef(new Animated.Value(0.3)).current;
-    const is_open_top_panel = useRef(false);
-    // Создаем анимированный компонент
-    const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
     // Key manager
-    const [keys_window_visible, set_keys_window_visible] = useState(false);
-    const [key_items, set_key_items] = useState([]);
+    const keys_window_visible = useRef(false);
+    const current_key = useRef(null);  // Текущий активный ключ, которым шифруются сообщения, end ключа
+    const [key_items, set_key_items] = useState([]);  // Содержимое списка ключей
+    const [first_key_list_item, set_first_key_list_item] = useState(null);  // Первый элемент списка ключей, он появится после добавления нового ключа
     const [is_load_key_manager, set_load_key_manager] = useState(false);
-    const [key_manager_has_error, key_manager_set_error] = useState(false);
     const [key_manager_error_code, set_key_manager_er_code] = useState(null);
-    const [current_key, set_current_key] = useState(null);  // Текущий активный ключ, которым шифруются сообщения
-    const [is_superchat, set_is_superchat] = useState(false);
     const [is_banned_current_key, set_ban_current_key] = useState(false);  // Текущий активный ключ
     const [total_key_counter, change_total_key_counter] = useState(0);  // Счётчик для краткой сводки
     const [local_key_counter, change_local_key_counter] = useState(0);  // Счётчик для краткой сводки
     const [undefined_key_counter, change_undefined_key_counter] = useState(0);  // Счётчик для краткой сводки
     const [banned_key_counter, change_banned_key_counter] = useState(0);  // Счётчик для краткой сводки
-    const [available_keys_counter, change_available_keys_counter] = useState(0);  // Счётчик для краткой сводки
+    const [available_keys_counter, change_available_keys_counter] = useState(0);  // Счётчик максимально допустимого кол-ва ключей, приходит с бэкенда
     const [unused_keys_counter, change_unused_keys_counter] = useState(0);  // Счётчик для краткой сводки
     const [is_show_crete_key_block, set_show_crete_key_block] = useState(false);  // Генерация нового ключа и кнопка копирования
     const [is_show_add_options_key_block, set_show_add_key_options] = useState(false); // Показ кнопок - вариант добавления ключа
     const [is_show_add_key_block, set_show_add_key_block] = useState(false);
-    const [new_key, set_new_key] = useState("");  // Содержимое инпута генерирования ключа
+    const [new_key, set_new_key] = useState("");  // Содержимое инпута генерирования ключа (используем именно useState, чтобы рендерить эффект заполнения поверх звёздочек)
     const [is_active_send_new_key, set_active_send_new_key] = useState(false);  // Отправка end от нового ключа на сервер
-    const [is_valid_apply_key_button, set_valid_apply_key_button] = useState(true);
+    const is_disabled_apply_key_button = useRef(true);
     const [key_was_copy, copy_key] = useState(false);
-    const [first_key_list_item, set_first_key_list_item] = useState(null);  // Последний или первый элемент списка ключей, он появится после добавления нового ключа
+    const key_input_carret_pos = useRef({start: 0, end: 0});
+    const [key_placeholder, set_key_placeholder] = useState('********-****-4***-****-************');
+    const keys_list_ref = useRef();
+    // dialog options (настройки диалога)
+    const dialog_options_visible = useRef(false);
+    const is_superchat = useRef(false);
+
+    // Верхняя панель настроек
+    const help_block_animation_move = useRef(new Animated.Value(-50 - StatusBar.currentHeight)).current;  // Используем useRef, чтобы значение сохранялось между рендерами
+    const help_block_button_animation = useRef(new Animated.Value(0.3)).current;
+    const is_open_top_panel = useRef(false);
+    const AnimatedPressable = Animated.createAnimatedComponent(Pressable);  // Создаем анимированный компонент
     let show_subscription = null;
     let hide_subscription = null;
     let fade_send_block = null;
     let show_send_block = null;
+
+    const remove_from_key_items = async(nodes, tail) => {
+        let all_key_items = nodes.filter((item, i, arr) => {
+            return item["end"] != tail;
+        });
+        set_key_items(all_key_items);
+    };
+    
+    const remove_from_header_key_item = async(tail) => {
+        if (first_key_list_item == null) {
+            return
+        }
+        if (first_key_list_item["end"] == tail) {
+            set_first_key_list_item(null);
+        }
+    };
+
+    const find_node = (nodes, node_data_key, node_data_value) => {
+        /** Найти ноду в node_items, по node_data_key и node_data_value,
+         * если они совпадут с данными внутри ноды.
+         */
+        for (let n = 0; n < nodes.length; n++) {
+            let node = nodes[n];
+            if (Object.hasOwn(node, node_data_key)) {
+                if (node[node_data_key] == node_data_value) {
+                    return node;
+                }
+            }
+        }
+        return null;
+    };
+
+    const search_first_separator = async(nodes) => {
+        /**
+         * Найти ноду с первым попавшимся sep в ноде
+         */
+        return nodes.find(node => Object.hasOwn(node, "sep")) || null;
+    };
+
+    const move_key_item_on_top = async(nodes, node, separator=null) => {
+        /**
+         * Вывести ноду на самый верх.
+         * Найти ноду с переданным tail, проверить хук use state c list header component,
+         * если list header component установлен, то хранящуюся там ноду добавляем к key_items списку,
+         * а новую ставим в list header component.
+         * Если хук, указывающий на list header component содержит null, 
+         * то добавляем туда текущую ноду и удаляем её из key_items списка
+         * separator - d["sep"] - строка - заголовок, добавляемый перед нодой
+         */
+        node["sep"] = separator;
+        remove_from_key_items(nodes, node["end"]);
+        if (first_key_list_item == null) {
+            set_first_key_list_item(node);
+            return 
+        }
+        if (first_key_list_item["end"] == node["end"]) {
+            set_first_key_list_item(node);
+            if (nodes.length && nodes[0]["sep"] == separator) {
+                delete nodes[0]["sep"];
+                set_key_items(nodes);
+            }
+            return
+        }
+        let current_node = first_key_list_item;
+        current_node["is_current_key"] = false;
+        let next_node_sep = await search_first_separator(nodes);
+        if (next_node_sep != null) {
+            current_node["sep"] = next_node_sep["sep"];
+            delete next_node_sep["sep"];
+
+        }
+        if (separator == current_node["sep"]) {
+            delete current_node["sep"];
+        }
+        set_key_items([...[current_node], ...nodes]);
+        set_first_key_list_item(node);
+    };
+
+    add_and_check_exists_key = async(change_key_status, key_tail, full_key=null) => {  // Вставка уже созданного ключа, с предварительной проверкой его существования на сервере
+        set_active_send_new_key(true);;
+        let request;
+        let auth_key = await get_auth_token();
+        let header = {"Accept": "application/json", "Content-Type": "application/json"};
+        if (auth_key != null) {
+            header["Authorization"] = "Token " + auth_key;
+        }
+        try {
+            request = await fetch(host + "/msg/key/check/", {
+                method: "POST",
+                headers: header,
+                body: JSON.stringify({"tail": JSON.stringify([key_tail])}),
+                signal: AbortSignal.timeout(3000),
+            });
+        } catch (_) {
+            set_active_send_new_key(false);
+            return
+        }
+        if (!request.ok) {
+            if (request.status == "401") {
+                router.replace("/login");
+                return
+            }
+            set_active_send_new_key(false);
+            return
+        }
+        let j;
+        try {
+            j = await request.json();
+        } catch (t) {
+            set_active_send_new_key(false);
+            return
+        }
+        set_show_add_key_block(false);
+        if (!(Array.isArray(j)) || j.length > 1) {
+            set_active_send_new_key(false);
+            return
+        }
+        if (!["is_banned", "expire", "end", "creator", 
+            "creator_username", "create_date"].every(item => Object.keys(j[0]).includes(item))) {
+            set_active_send_new_key(false);
+            return
+        }
+        if (j.length == 0) { // Ключ ненайден на сервере, удалить его из списка
+            remove_from_header_key_item(key_tail);
+            remove_from_key_items(key_items, key_tail);
+            set_active_send_new_key(false);
+            return
+        }
+        j = j[0];
+        if (change_key_status == "set_active") { // Ключ уже должен быть добавлен, нужно только отметить его действующим
+            let all_key_items = key_items;
+            for (let i = 0; i < all_key_items.length; i++) {
+                all_key_items[i]["is_current_key"] = false;
+            }
+            let total_keys_from_current_dialog = await get_keys(dialog_id);
+            let full_key_from_storage = total_keys_from_current_dialog[j["end"]] || null;
+            if (full_key_from_storage == null) {
+                await add_key(dialog_id, full_key);
+            }
+            full_key = full_key_from_storage || full_key;
+            if (full_key == null) {
+                j["key_undefined"] = true;
+            }
+            j["is_current_key"] = true;
+            set_current_active_key(dialog_id, key_tail, full_key);
+            current_key.current = key_tail;
+            move_key_item_on_top(all_key_items, j, "Текущий");
+        }
+        if (change_key_status == "add_new") {  // Только что добавили из инпута
+            add_key(dialog_id, full_key);
+            move_key_item_on_top(key_items, j, "Новый");
+        }
+        if (change_key_status == "set_inactive") {
+            remove_current_active_key(dialog_id);
+            delete j["is_current_key"];
+            let node_with_sep = await search_first_separator(key_items);
+            move_key_item_on_top(key_items, j, node_with_sep == null ? "" : node_with_sep["sep"]);
+        }
+        set_active_send_new_key(false);
+        keys_list_ref.current.scrollToIndex({
+            animated: true,
+            index: 0,
+            viewOffset: 75
+        });
+    };
+
+    const update_items_data = async(local, internal, active_key, used_items_category=true) => {  // Модификация словаря с данными под парсинг keyitem
+        const create_date_sep = async(first_msg_time_str, last_msg_time_str, is_current_key=null) => {
+            let first_msg_t = new Date(first_msg_time_str);
+            let last_msg_t = new Date(last_msg_time_str);
+            let left_date = first_msg_t.getUTCFullYear() + "." + first_msg_t.getUTCMonth() + 1 + "." + first_msg_t.getUTCDate();
+            let right_date;
+            if (!is_current_key) {
+                right_date = last_msg_t.getUTCFullYear() + "." + last_msg_t.getUTCMonth() + 1 + "." + last_msg_t.getUTCDate();
+            } else {
+                right_date = "Текущий момент";
+            }
+            return left_date == right_date ? left_date : left_date + " - " + right_date;
+        };
+        let time = new Date();
+        for (var i = 0; i < internal.length; i++) {
+            let data = internal[i];
+            data["key_undefined"] = false;
+            if (!(Object.keys(local).includes(data["end"]))) {
+                data["key_undefined"] = true;
+            }
+            data["is_current_key"] = false;
+            if (active_key == data["end"]) {
+                data["is_current_key"] = true;
+                current_key.current = current_key;
+                if (data["expire"] != null) {
+                    if (time > data["expire"]) {
+                        set_ban_current_key(true);
+                    }
+                }
+            }
+            if (data["is_banned"] && data["is_current_key"]) {
+                set_ban_current_key(true);
+            }
+            if (used_items_category) {
+                data["sep"] = await create_date_sep(data["first_message_time"], data["last_message_time"], current_key.current);
+            }
+        }
+    };
+
+    const update_keys_stat = async(local_items_dict, items_type_1, items_type_2) => {  // Добавление общей сводки по ключам
+        let undefined_key_counter = 0;
+        let banned_key_counter = 0;
+        let time = new Date();
+        let items = [...items_type_1, ...items_type_2];
+        for (var i = 0; i < items.length; i++) {
+            let data = items[i];
+            if (!data["end"] in Object.keys(local_items_dict)) {
+                undefined_key_counter++;
+            }
+            if (data["is_banned"]) {
+                banned_key_counter++;
+            } else {
+                if (data["expire"] != null) {
+                    if (time > data["expire"]) {
+                        banned_key_counter++;
+                    }
+                }
+            }
+        }
+        change_total_key_counter(items_type_1.length + items_type_2.length);
+        change_local_key_counter(Object.keys(local_items_dict).length);
+        change_undefined_key_counter(undefined_key_counter);
+        change_banned_key_counter(banned_key_counter);
+    };
+
+    const toggle_help_block = () => {
+        let b = StatusBar.currentHeight;
+        Animated.timing(help_block_animation_move, {
+          toValue: is_open_top_panel.current ? -50 - b : 50 + b,
+          duration: 100,
+          useNativeDriver: true,
+        }).start();
+        Animated.timing(help_block_button_animation, {
+            toValue: is_open_top_panel.current ? 0.3 : 1,
+            duration: 1000,
+            useNativeDriver: true,
+        }).start();
+        is_open_top_panel.current = !is_open_top_panel.current;
+    };
+
+    const show_key_manager = async() => {
+        set_load_key_manager(true);
+        keys_window_visible.current = true;
+        let interval;
+        let internal_data = await load_keys_from_current_dialog();
+        let used_keys = Object.hasOwn(internal_data, "used_keys") ? internal_data["used_keys"] : [];
+        let unused_keys = Object.hasOwn(internal_data, "my_unused_keys") ? internal_data["my_unused_keys"] : [];
+        let local_data = await get_keys(dialog_id);
+        let active_key = get_current_key_tail(dialog_id);
+        if (internal_data == false) {
+            interval = setInterval(async() => {
+                internal_data = await load_keys_from_current_dialog();
+                if (internal_data != false) {
+                    let used_keys = internal_data["used_keys"] || [];
+                    let unused_keys = internal_data["my_unused_keys"] || [];
+                    update_items_data(local_data, used_keys, active_key, true);
+                    update_items_data(local_data, unused_keys, active_key, false);
+                    if (unused_keys.length > 0) {
+                        unused_keys[0]["sep"] = "Ранее не использовались";
+                    }
+                    let total_keys = [...used_keys, ...unused_keys];
+                    set_key_items(total_keys);
+                    let active_node = find_node(total_keys, "is_current_key", true);  // Попытаемся дополнительно сортировать ключи - вынести текущий ключ первым в списке
+                    if (active_node != null) {
+                        move_key_item_on_top(total_keys, active_node, "Текущий");
+                    } else {
+                        let unfill_node = find_node(total_keys, "key_undefined", true);  // Попытаемся дополнительно сортировать ключи - вынести не заполненный ключ первым в списке
+                        unfill_node == null ? null : move_key_item_on_top(total_keys, unfill_node, "Новый");
+                    }
+                    update_keys_stat(local_data, used_keys, unused_keys);
+                    change_available_keys_counter(internal_data["max_keys_count_on_dialog"]);
+                    change_unused_keys_counter(unused_keys.length);
+                    is_superchat.current = internal_data["is_superchat"];
+                    set_load_key_manager(false);
+                    clearInterval(interval);
+                }
+            }, 5000);
+            return
+        }
+        update_items_data(local_data, used_keys, active_key, true);
+        update_items_data(local_data, unused_keys, active_key, false);
+        if (unused_keys.length > 0) {
+            unused_keys[0]["sep"] = "Ранее не использовались";
+        }
+        let total_keys = [...used_keys, ...unused_keys];
+        set_key_items(total_keys);
+        let active_node = find_node(total_keys, "is_current_key", true);  // Попытаемся дополнительно сортировать ключи - вынести текущий ключ первым в списке
+        if (active_node != null) {
+            move_key_item_on_top(total_keys, active_node, "Текущий");
+        }
+        update_keys_stat(local_data, used_keys, unused_keys);
+        change_available_keys_counter(internal_data["max_keys_count_on_dialog"]);
+        change_unused_keys_counter(unused_keys.length);
+        is_superchat.current = internal_data["is_superchat"];
+        set_load_key_manager(false);
+    };
+
+    const get_key_from_buffer = async() => {
+        let key = await Clipboard.getStringAsync();
+        set_show_add_key_block(true);
+        set_show_add_key_options(false);
+        if (is_valid_key_and_tail(key.slice(-7), key)) {
+            set_new_key(key);
+            is_disabled_apply_key_button.current = false;
+        } else {
+            is_disabled_apply_key_button.current = true;
+        }
+    };
+
+    const hide_key_manager = async() => {
+        keys_window_visible.current = false;
+        set_key_items([]);
+        set_load_key_manager(false);
+        set_key_manager_er_code(null);
+        set_show_crete_key_block(false);
+        set_new_key("");  // Содержимое инпута генерирования ключа
+        is_disabled_apply_key_button.current = true;
+        set_show_add_key_block(false);
+        set_show_add_key_options(false);
+        copy_key(false);
+        set_key_placeholder('********-****-4***-****-************');
+        set_first_key_list_item(null);
+        toggle_help_block();
+    };
+
+    const get_text_over_placeholder_text = (placeholder_text, text) => {  // Получить строку, поверх базовой строки (заполнение инпута поверх подсказки)
+        let i = text.indexOf("*");
+        let cleaned_text = text;
+        if (i != -1) {
+            cleaned_text = text.slice(0, i);
+            for (let t = i; t < placeholder_text.length; t++) {
+                if (placeholder_text[t] != "*") {
+                    cleaned_text = cleaned_text + placeholder_text[t];
+                    i = i + 1;
+                } else {
+                    break
+                }
+            }
+            if (cleaned_text.length == placeholder_text.length) {
+                key_input_carret_pos.current = {start: cleaned_text.length, end: cleaned_text.length};
+                return cleaned_text;
+            }
+        } else {
+            i = cleaned_text.length;
+        }
+        let pl = placeholder_text.slice(i, placeholder_text.length);
+        key_input_carret_pos.current = {start: i, end: i};
+        return cleaned_text + pl;
+    };
 
     const load_messages = async() => {
         if (page_counter == null || is_loading) {
@@ -322,21 +714,6 @@ export default function Messages() {  // В обычном react-native dialog-i
         set_error_code_or_reason(r.status);
     };
 
-    const toggle_help_block = () => {
-        let b = StatusBar.currentHeight;
-        Animated.timing(help_block_animation_move, {
-          toValue: is_open_top_panel.current ? -50 - b : 50 + b,
-          duration: 100,
-          useNativeDriver: true,
-        }).start();
-        Animated.timing(help_block_button_animation, {
-            toValue: is_open_top_panel.current ? 0.3 : 1,
-            duration: 1000,
-            useNativeDriver: true,
-        }).start();
-        is_open_top_panel.current = !is_open_top_panel.current;
-    };
-
     const load_keys_from_current_dialog = async() => {
         if (is_load_key_manager) {
             return {};
@@ -359,7 +736,6 @@ export default function Messages() {  // В обычном react-native dialog-i
             return false;
         }
         if (!loader.ok) {
-            key_manager_set_error(true);
             set_key_manager_er_code(loader.status);
             return {}
         }
@@ -367,14 +743,11 @@ export default function Messages() {  // В обычном react-native dialog-i
         try {
             data = await loader.json();
         } catch (e_msg) {
-            key_manager_set_error(true);
             set_key_manager_er_code("json loads");
             return {}
         }
         if (!Object.hasOwn(data, "is_superchat") || !Object.hasOwn(data, "used_keys") || !Object.hasOwn(data, "my_unused_keys") ||
             !Object.hasOwn(data, "max_keys_count_on_dialog")) {
-            console.log(Object.keys(data));
-            key_manager_set_error(true);
             set_key_manager_er_code("invalid json data");
             return {}
         }
@@ -382,175 +755,41 @@ export default function Messages() {  // В обычном react-native dialog-i
                               "creator", "is_banned", "expire", "create_date", "creator_username"];
         let unused_keys_list = ["end", "create_date", "creator_username", "creator", "is_banned", "expire"];
         if (!data["used_keys"].every(obj => Object.keys(obj).every(key => used_keys_list.includes(key)))) {
-            key_manager_set_error(true);
             set_key_manager_er_code("invalid json data");
             return {}
         }
         if (!data["my_unused_keys"].every(obj => Object.keys(obj).every(key => unused_keys_list.includes(key)))) {
-            key_manager_set_error(true);
             set_key_manager_er_code("invalid json data");
             return {}
         }
         return data;
     };
 
-    const update_items_data = async(local, internal, active_key, used_items_category=true) => {  // Модификация словаря с данными под парсинг keyitem
-        const create_date_sep = async(first_msg_time_str, last_msg_time_str, is_current_key=null) => {
-            let first_msg_t = new Date(first_msg_time_str);
-            let last_msg_t = new Date(last_msg_time_str);
-            let left_date = first_msg_t.getUTCFullYear() + "." + first_msg_t.getUTCMonth() + 1 + "." + first_msg_t.getUTCDate();
-            let right_date;
-            if (!is_current_key) {
-                right_date = last_msg_t.getUTCFullYear() + "." + last_msg_t.getUTCMonth() + 1 + "." + last_msg_t.getUTCDate();
-            } else {
-                right_date = "Текущий момент";
-            }
-            return left_date == right_date ? left_date : left_date + " - " + right_date;
-        };
-        let current_key = null;
-        let is_current_key_banned = false;
-        let time = new Date();
-        for (var i = 0; i < internal.length; i++) {
-            let data = internal[i];
-            data["key_undefined"] = false;
-            if (!Object.keys(local).includes(data["end"])) {
-                data["key_undefined"] = true;
-            }
-            data["is_current_key"] = false;
-            if (active_key == data["end"]) {
-                data["is_current_key"] = true;
-                current_key = active_key;
-                set_current_key(current_key);
-                if (data["expire"] != null) {
-                    if (time > data["expire"]) {
-                        is_current_key_banned = true;
-                        set_ban_current_key(true);
-                    }
-                }
-            }
-            if (data["is_banned"] && data["is_current_key"]) {
-                is_current_key_banned = true;
-                set_ban_current_key(true);
-            }
-            if (used_items_category) {
-                data["sep"] = await create_date_sep(data["first_message_time"], data["last_message_time"], current_key);
-            }
-        }
-    };
-
-    const update_keys_stat = async(local_items_dict, items_type_1, items_type_2) => {  // Добавление общей сводки по ключам
-        let undefined_key_counter = 0;
-        let banned_key_counter = 0;
-        let time = new Date();
-        let items = [...items_type_1, ...items_type_2];
-        for (var i = 0; i < items.length; i++) {
-            let data = items[i];
-            if (!data["end"] in Object.keys(local_items_dict)) {
-                undefined_key_counter++;
-            }
-            if (data["is_banned"]) {
-                banned_key_counter++;
-            } else {
-                if (data["expire"] != null) {
-                    if (time > data["expire"]) {
-                        banned_key_counter++;
-                    }
-                }
-            }
-        }
-        change_total_key_counter(items_type_1.length + items_type_2.length);
-        change_local_key_counter(Object.keys(local_items_dict).length);
-        change_undefined_key_counter(undefined_key_counter);
-        change_banned_key_counter(banned_key_counter);
-    };
-
-    const add_and_check_exists_key = async() => {  // Вставка уже созданного ключа, с предварительной проверкой его существования на сервере
-        set_active_send_new_key(true);
-        let request;
-        let key = [new_key.slice(-7)];
-        let auth_key = await get_auth_token();
-        let header = {"Accept": "application/json", "Content-Type": "application/json"};
-        if (auth_key != null) {
-            header["Authorization"] = "Token " + auth_key;
-        }
-        try {
-            request = fetch(host + "/msg/key/check/", {
-                headers: header,
-                body: JSON.stringify({"tail": key}),
-                signal: AbortSignal.timeout(3000),
-            });
-        } catch (_) {
-            set_active_send_new_key(false);
+    const create_and_send_new_key = async(key) => { // Генерация нового ключа, возможность им поделиться, и создание записи на сервере
+        if (!is_valid_key_and_tail(key)) {
             return
         }
-        if (!request.ok) {
-            if (request.status == "401") {
-                router.replace("/login");
-                return
-            }
-            set_active_send_new_key(false);
-            return
-        }
-        let j;
-        try {
-            j = request.json();
-        } catch (_) {
-            set_active_send_new_key(false);
-            return
-        }
-        let key_data = null;
-        j.every((item) => {
-            if (item["end"] == key[0]) {
-                key_data = item;
-                if (item["active"] == false) {
-                    key_data = null;
-                }
-            }
-        });
-        if (key_data != null) {
-            set_first_key_list_item(key_data);
-        }
-        set_active_send_new_key(false);
-    };
-
-    const create_and_send_new_key = async() => { // Генерация нового ключа, возможность им поделиться, и создание записи на сервере
-        const remove_exists_key_item = async(cur_key) => {
-            let current_items_in_results = key_items;
-            if (!Object.hasOwn(current_items_in_results, "results")) {
-                return
-            }
-            let key_in_all_keys = false;
-            for (let i = 0; i < current_items_in_results["results"].length; i++) {
-                let item = current_items_in_results["results"][i];
-                if (item["end"] == cur_key) {
-                    delete current_items_in_results["results"][i];
-                    key_in_all_keys = true;
-                }
-            }
-            key_in_all_keys ? set_key_items(current_items_in_results) : null;
-        };
-
-        let key = new_key.slice(-7);
         set_active_send_new_key(true);
         let request;
         let token = await get_auth_token();
         let h = {"Accept": "application/json", "Content-Type": "application/json"};
         token ? h["Authorization"] = "Token " + token : null;
         try {
-            request = fetch(host + "/msg/key/add/", {
+            request = await fetch(host + "/msg/key/add/", {
                 method: "POST",
                 headers: h,
                 body: JSON.stringify({"end": key, "d": dialog_id}),
                 signal: AbortSignal.timeout(5000)
             });
-        } catch (_) {
-            set_active_send_new_key(false);
-        }
-        if (!request.ok) {
-            if (request.status == 401) {
-                router.replace("/login");
+            if (!request.ok) {
+                if (request.status == 401) {
+                    router.replace("/login");
+                    return
+                }
+                set_active_send_new_key(false);
                 return
             }
+        } catch (_) {
             set_active_send_new_key(false);
             return
         }
@@ -561,80 +800,22 @@ export default function Messages() {  // В обычном react-native dialog-i
             set_active_send_new_key(false);
             return
         }
-        remove_exists_key_item(key);
-        set_current_key(dialog_id, key, new_key);
+        await add_key(dialog_id, new_key);
+        set_current_active_key(dialog_id, key, new_key);
         set_ban_current_key(false);
-        set_current_key_tail(key);
+        current_key.current = key;
+        move_key_item_on_top(key_items, d, "Новый");
         set_active_send_new_key(false);
-    };
-
-    const show_key_manager = async() => {
-        set_keys_window_visible(true);
-        set_load_key_manager(true);
-        let interval;
-        let internal_data = await load_keys_from_current_dialog();
-        let used_keys = Object.hasOwn(internal_data, "used_keys") ? internal_data["used_keys"] : [];
-        let unused_keys = Object.hasOwn(internal_data, "my_unused_keys") ? internal_data["my_unused_keys"] : [];
-        let local_data = await get_keys(dialog_id);
-        let active_key = await get_current_key_tail();
-        if (internal_data == false) {
-            interval = setInterval(async() => {
-                internal_data = await load_keys_from_current_dialog();
-                if (internal_data != false) {
-                    let used_keys = internal_data["used_keys"] || [];
-                    let unused_keys = internal_data["my_unused_keys"] || [];
-                    update_items_data(local_data, used_keys, active_key, true);
-                    update_items_data(local_data, unused_keys, active_key, false);
-                    if (unused_keys.length) {
-                        unused_keys[0]["sep"] = "Ранее не использовались";
-                    }
-                    set_key_items([...used_keys, ...unused_keys]);
-                    update_keys_stat(local_data, used_keys, unused_keys);
-                    change_available_keys_counter(internal_data["max_keys_count_on_dialog"]);
-                    change_unused_keys_counter(unused_keys.length);
-                    set_is_superchat(internal_data["is_superchat"]);
-                    set_load_key_manager(false);
-                    clearInterval(interval);
-                }
-            });
-            return
-        }
-        update_items_data(local_data, used_keys, active_key, true);
-        update_items_data(local_data, unused_keys, active_key, false);
-        set_key_items([...used_keys, ...unused_keys]);
-        update_keys_stat(local_data, used_keys, unused_keys);
-        change_available_keys_counter(internal_data["max_keys_count_on_dialog"]);
-        change_unused_keys_counter(unused_keys.length);
-        set_is_superchat(internal_data["is_superchat"]);
-        set_load_key_manager(false);
-    };
-
-    const get_key_from_buffer = async() => {
-        let key = await Clipboard.getStringAsync();
-        set_show_add_key_block(true);
-        set_show_add_key_options(false);
-        if (is_valid_key_and_tail(key.slice(-7), key)) {
-            set_new_key(key);
-        }
-    };
-
-    const hide_key_manager = async() => {
-        set_keys_window_visible(false);
-        set_key_items([]);
-        set_load_key_manager(false);
-        key_manager_set_error(false);
-        set_key_manager_er_code(null);
-        set_current_key(null);  // Текущий активный ключ
-        set_ban_current_key(false);  // Текущий активный ключ
         set_show_crete_key_block(false);
-        set_new_key("");  // Содержимое инпута генерирования ключа
-        set_valid_apply_key_button(false);
-        set_show_add_key_block(false);
-        set_show_add_key_options(false);
-        copy_key(false);
+        keys_list_ref.current.scrollToIndex({
+            animated: true,
+            index: 0,
+            viewOffset: 75
+        });
     };
 
     useEffect(() => {
+        current_key.current = get_current_key_tail(dialog_id);
         let interval = null;
 
         const refresh = async() => {
@@ -651,23 +832,24 @@ export default function Messages() {  // В обычном react-native dialog-i
         };
         refresh();
         if (Platform.OS != "web") {
-            const fade_send_block = Keyboard.addListener('keyboardDidShow', (_) => {
+            fade_send_block = Keyboard.addListener('keyboardDidShow', (_) => {
                 change_opacity(1);
             });
-            const show_send_block = Keyboard.addListener('keyboardDidHide', (_) => {
+            show_send_block = Keyboard.addListener('keyboardDidHide', (_) => {
                 change_opacity(0.1);
             });
             if (Platform.OS == "android") { // В ios клавитура сдвигает в ...<KeyboardAvoidingView behavior=..., для андроид пришлось писать этот костыль
-                const show_subscription = Keyboard.addListener('keyboardDidShow', (event) => {
+                show_subscription = Keyboard.addListener('keyboardDidShow', (event) => {
                     set_keyboard_height(event.endCoordinates.height + 60);
                     set_last_msg_h(120 + event.endCoordinates.height);
                 });
-                    const hide_subscription = Keyboard.addListener('keyboardDidHide', (_) => {
-                    set_keyboard_height(60);
-                    set_last_msg_h(120);
+                hide_subscription = Keyboard.addListener('keyboardDidHide', (_) => {
+                set_keyboard_height(60);
+                set_last_msg_h(120);
                 });
             }
         }
+
         return () => {
             interval == null ? null : clearInterval(interval);
             set_messages([]);
@@ -680,19 +862,20 @@ export default function Messages() {  // В обычном react-native dialog-i
             fade_send_block ? fade_send_block.remove() : null;
             show_send_block ? show_send_block.remove() : null;
             // key manager
-            set_keys_window_visible(false);
+            keys_window_visible.current = false;
             set_key_items([]);
             set_load_key_manager(false);
-            key_manager_set_error(false);
             set_key_manager_er_code(null);
-            set_current_key(null);  // Текущий активный ключ
             set_ban_current_key(false);  // Текущий активный ключ
             set_show_crete_key_block(false);
             set_new_key("");  // Содержимое инпута генерирования ключа
-            set_valid_apply_key_button(false);
+            is_disabled_apply_key_button.current = true;
             set_show_add_key_block(false);
             set_show_add_key_options(false);
             copy_key(false);
+            set_key_placeholder('********-****-4***-****-************');
+            set_first_key_list_item(null);
+            current_key.current = null;
         };
     }, [dialog_id]);
     return (
@@ -719,19 +902,31 @@ export default function Messages() {  // В обычном react-native dialog-i
             ) : (
                     <>
                     <Animated.View style={[styles.settings, {transform: [{translateY: help_block_animation_move}] } ]}>
+                        <TouchableOpacity onPress={() => router.back()}>
+                            <Image source={require("../assets/back.png")} style={styles.help_line_img} />
+                        </TouchableOpacity>
                         <TouchableOpacity onPress={show_key_manager}>
                             <Image source={require("../assets/key_icon_vertical_150.png")} style={styles.help_line_img} />
                         </TouchableOpacity>
+                        <TouchableOpacity onPress={show_key_manager}>
+                            <Image source={require("../assets/dialog-settings.png")} style={styles.help_line_img} />
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={show_key_manager}>
+                            <Image source={require("../assets/group_chat_icon_128x128.png")} style={styles.help_line_img} />
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={show_key_manager}>
+                            <Image source={require("../assets/profile-96.png")} style={styles.help_line_img} />
+                        </TouchableOpacity>
                     </Animated.View>
-                    <AnimatedPressable style={[styles.settings_button, {transform: [{translateY: Animated.add(help_block_animation_move, 60)}]},
+                    <AnimatedPressable style={[styles.toggle_settings_button, {transform: [{translateY: Animated.add(help_block_animation_move, 60)}]},
                         {opacity: help_block_button_animation} ]} onPress={toggle_help_block}>
                         <Image source={require("../assets/free-icon-plus-button-10233527.png")} style={styles.plus} />
                     </AnimatedPressable>
-                    <Modal visible={keys_window_visible} animationType="fade" transparent={true}>
+                    <Modal visible={keys_window_visible.current} animationType="fade" transparent={true}>
                         {is_load_key_manager ? (
                             <ActivityIndicator />
                         ) : (
-                            key_manager_has_error ? (
+                            key_manager_error_code != null ? (
                                 <View style={styles.keys_container}>
                                     <Text>Произошла ошибка:</Text>
                                     <Text>{key_manager_error_code}</Text>
@@ -739,7 +934,7 @@ export default function Messages() {  // В обычном react-native dialog-i
                             ) : (
                                 <View style={styles.keys_container}>
                                     <Text style={styles.head_text}>Шифрование</Text>
-                                    <Text>Всего ключей: {total_key_counter}</Text>
+                                    <Text>Всего ключей: {total_key_counter}/{available_keys_counter}</Text>
                                     <Text>На вашем устройстве: {local_key_counter}</Text>
                                     <Text>Не найдены: {undefined_key_counter}</Text>
                                     <Text>Заблокированы: {banned_key_counter}</Text>
@@ -755,12 +950,18 @@ export default function Messages() {  // В обычном react-native dialog-i
                                         <Text style={styles.keys_table_inner_last}>Действие</Text>
                                     </View>
                                     <FlatList data={key_items}
-                                        renderItem={({item}) => <KeyListItem item = {item} />}
+                                        renderItem={({item}) => <KeyListItem item={item} set_show_add_key={set_show_add_key_block}
+                                        set_placeholder={set_key_placeholder} />}
                                         ListHeaderComponent={() => {
-                                            first_key_list_item == null ? null : (
-                                                <KeyListItem item = {first_key_list_item} />
-                                            )
-                                        }} />
+                                            if (first_key_list_item == null) return null;
+                                            return (
+                                                <KeyListItem 
+                                                    item={first_key_list_item} 
+                                                    set_show_add_key={set_show_add_key_block}
+                                                    set_placeholder={set_key_placeholder} 
+                                                />
+                                            );
+                                        }} ref={keys_list_ref} />
                                     <View>
                                         {is_show_crete_key_block ? (
                                             <>
@@ -782,7 +983,9 @@ export default function Messages() {  // В обычном react-native dialog-i
                                                 <View style={styles.keys_window_bottom_block}>
                                                     {is_active_send_new_key ? <ActivityIndicator /> : null}
                                                     {current_key != new_key ? (
-                                                        <Button title="Установить" onPress={async() => {await create_and_send_new_key()}} />
+                                                        <Button title="Установить" onPress={() => {
+                                                            create_and_send_new_key(new_key.slice(-7));
+                                                        }} />
                                                     ) : null}
                                                 </View>
                                             </>
@@ -792,21 +995,28 @@ export default function Messages() {  // В обычном react-native dialog-i
                                                 <TextInput multiline={false} autoCorrect={false} autoFocus={() => {
                                                         is_valid_key_and_tail(new_key.slice(-7), new_key) ? false : true
                                                     }} value={new_key} style={styles.key_input}
-                                                    onChangeText={async(t) => {
-                                                         const is_valid = is_valid_key_and_tail(t.slice(-7), t);
-                                                         set_valid_apply_key_button(!is_valid);
-                                                         set_new_key(t);
-                                                     }} autoCapitalize={false} />
-                                                <Button title="Ok" disabled={is_valid_apply_key_button} onPress={async() => {await add_and_check_exists_key()}} />
+                                                    onChangeText={(t) => {
+                                                        let text = get_text_over_placeholder_text(key_placeholder, t);
+                                                        const is_valid = is_valid_key_and_tail(text.slice(-7), text);
+                                                        is_disabled_apply_key_button.current = !is_valid;
+                                                        set_new_key(text);
+                                                     }} autoCapitalize={false} 
+                                                     selection={key_input_carret_pos.current} 
+                                                     placeholder={key_placeholder} />
+                                                {is_active_send_new_key ? <ActivityIndicator /> : null}
+                                                <Button title="Ok" disabled={is_disabled_apply_key_button.current} onPress={async() => {
+                                                    let t = new_key.slice(-7);
+                                                    add_and_check_exists_key("add_new", t, new_key);
+                                                    }} />
                                             </View>
                                         ) : null}
                                         {is_show_add_options_key_block ? (
                                             <View style={styles.keys_window_bottom_block}>
-                                                <Button title="Вставить" onPress={() => {get_key_from_buffer();set_show_add_key_options(false)}} />
+                                                <Button title="Вставить" onPress={get_key_from_buffer} />
                                                 <Button title="Сгенерировать" onPress={async() => {
-                                                    set_show_crete_key_block(true);
                                                     set_new_key(await generate_key());
                                                     set_show_add_key_options(false);
+                                                    set_show_crete_key_block(true);
                                                 }} />
                                             </View>
                                         ) : null}
@@ -821,6 +1031,7 @@ export default function Messages() {  // В обычном react-native dialog-i
                             )
                         )}
                     </Modal>
+
                     <SafeAreaProvider style={styles.main}>
                         <SafeAreaView style={styles.safe_area} edges={['left', 'right']}>
                             <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -889,6 +1100,7 @@ const styles = StyleSheet.create({
         flexDirection: "column",
         justifyContent: 'flex-start',
         alignSelf: 'flex-start', // Прижимает блок к ЛЕВОМУ краю
+        minWidth: 150,
         marginTop: 15,
         marginLeft: 10,
     },
@@ -900,6 +1112,7 @@ const styles = StyleSheet.create({
         flexDirection: "column",
         justifyContent: 'flex-start',
         alignSelf: 'flex-end', // Прижимает блок к ПРАВОМУ краю
+        minWidth: 150,
         marginTop: 15,
         marginRight: 10,
     },
@@ -955,6 +1168,7 @@ const styles = StyleSheet.create({
     },
     settings: {
         flexDirection: "row",
+        justifyContent: "space-evenly",
         position: "absolute",
         width: "100%",
         zIndex: 10,
@@ -964,7 +1178,7 @@ const styles = StyleSheet.create({
         backgroundColor: "#DDD",
         height: 50 + StatusBar.currentHeight,
     },
-    settings_button: {
+    toggle_settings_button: {
         width: 50,
         height: 50,
         position: "absolute",
@@ -1046,5 +1260,12 @@ const styles = StyleSheet.create({
         backgroundColor: '#999', // Задний фон для чужих сообщений
         padding: 15,
         borderRadius: 5,
+    },
+    msg_bottom: {
+        flexDirection: "row", 
+        justifyContent: "space-between", 
+    },
+    msg_bottom_text: {
+        fontSize: 9, 
     },
 });
