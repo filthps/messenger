@@ -54,10 +54,11 @@ function DialogItem({item}) {
     let body = item["msg_body"];
     let members = item["members_data"];
     let last_msg_is_mine = item["is_mine"];
+    let superchat = item["is_superchat"];
 
     return (
         <View style={styles.dialog_item}>
-                <Link href={{pathname: "/messages", params: {dialog_id: id}}} asChild>
+                <Link href={{pathname: "/messages", params: {dialog_id: id, is_superchat: superchat}}} asChild>
                     <TouchableOpacity>
                         <FlatList style={styles.thumbs_list} data={members} renderItem={({item}) => <DialogItemThumbsBlock item={item} />} />
                         <View style={styles.text_container}>

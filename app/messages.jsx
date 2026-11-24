@@ -6,6 +6,7 @@ import { useRouter, Link, useLocalSearchParams } from 'expo-router';
 import { Checkbox } from 'expo-checkbox';
 import * as Clipboard from 'expo-clipboard';
 import { host, get_auth_token } from './index';
+import { Alert } from './tools/notify';
 import { encrypt_message_item, decrypt_message_item, 
     get_keys, get_current_key_tail, generate_key, is_valid_key_and_tail, set_current_active_key, add_key, remove_current_active_key } from './encryption';
 
@@ -22,7 +23,6 @@ function KeyListItem({item, set_show_add_key, set_placeholder}) {
     let expire_date = item["expire"] == null ? null : new Date(item["expire"]);
     let key_is_out_of_date = expire_date == null ? false : new Date() > expire_date;
     let create_time_str = create_date.getUTCFullYear() + "." + create_date.getUTCMonth() + 1 + "." + create_date.getUTCDate();
-
 
 
     const fill_exists_key = (tail) => {  // Заполнить существующий ключ из списка (по кнопке)
@@ -110,6 +110,7 @@ function Message({item, next_item}) {
     let is_my_message = item["is_mine"];
     let avatar = item["owner__dialog_thumb"];
     let author = item["owner__username"];
+    let error = item["decrypt_error"] || false; // Ошибка при попытке расшифровать сообщение, полный ключ не нашёлся в памяти на устройстве
     let is_change_messages_block = next_message_owner_id != author_id;
     let days_between_message = get_days_from_ms(next_message_time - time);
     let current_message_month_num = time.getUTCMonth();
@@ -134,10 +135,13 @@ function Message({item, next_item}) {
                         <View style={styles.message_body_left}>
                             <Text>{raw}</Text>
                             <View style = {styles.msg_bottom}>
-                                {key_tail == null ? (
-                                    <Text style={styles.msg_bottom_text}>Не зашифровано</Text>
-                                ) : (
-                                    <Text style={styles.msg_bottom_text}>#{key_tail}</Text>
+                                {error ? (
+                                    <Text>#{key_tail} - не найден</Text>
+                                ) : (key_tail == null ? (
+                                        <Text style={styles.msg_bottom_text}>Не зашифровано</Text>
+                                    ) : (
+                                        <Text style={styles.msg_bottom_text}>#{key_tail}</Text>
+                                    )
                                 )}
                                 <Text style={styles.msg_bottom_text}>{msg_time_str}</Text>
                             </View>
@@ -159,10 +163,13 @@ function Message({item, next_item}) {
                             <Text>{raw}</Text>
                             <View style = {styles.msg_bottom}>
                                 <Text style={styles.msg_bottom_text}>{msg_time_str}</Text>
-                                {key_tail == null ? (
-                                    <Text style={styles.msg_bottom_text}>Не зашифровано</Text>
-                                ) : (
-                                    <Text style={styles.msg_bottom_text}>#{key_tail}</Text>
+                                {error ? (
+                                    <Text>#{key_tail} - не найден</Text>
+                                ) : (key_tail == null ? (
+                                        <Text style={styles.msg_bottom_text}>Не зашифровано</Text>
+                                    ) : (
+                                        <Text style={styles.msg_bottom_text}>#{key_tail}</Text>
+                                    )
                                 )}
                             </View>
                         </View>
@@ -176,22 +183,23 @@ function Message({item, next_item}) {
 export default function Messages() {  // В обычном react-native dialog-id передавали бы сюда
     const is_valid_json = async(data) => {
         const required_fields = ["id", "owner", "raw", "key_info", "time", "edit_time",
-            "is_edit", "owner__username", "owner__dialog_thumb", "is_mine"];
+            "is_edit", "owner__username", "owner__dialog_thumb", "is_mine", "dialog"];
+        
         return required_fields.every(field => Object.hasOwn(data, field));
     };
     const {dialog_id} = useLocalSearchParams();  // Это только потому, что Expo
+    const {is_superchat} = useLocalSearchParams();
     const router = useRouter();
     const [messages, set_messages] = useState([]);
-    const [page_counter, set_page] = useState(1);
-    const [is_loading, set_loading] = useState(false);
-    const [invalid_service, set_invalid] = useState(false);
-    const [rest_error_code_or_reason, set_error_code_or_reason] = useState(null);
+    const [messages_page_counter, set_messages_page_counter] = useState(1);
+    const [is_dialog_loading, set_dialog_loading] = useState(false);
+    const [dialog_error, set_dialog_error] = useState(null); // Ошибка загрузки сообщений
     const [keyboard_h, set_keyboard_height] = useState(60);  // Для сдвига action View при подъёме клавиатуры
     const [last_message_height, set_last_msg_h] = useState(120);  // Для сдвига сообщений при подъёме клавиатуры
-    const [get_opacity, change_opacity] = useState(false);
+    const keyboard_opacity = useRef(0.1);
     const [draft, change_draft] = useState("");  // Черновик сообщения
     const [is_active_send, set_is_active_send_msg] = useState(false);
-    const [error_send, set_send_with_error] = useState(false);
+    const [error_send, set_send_error] = useState(null);  // Ошибка при отправке сообщения
     // Key manager
     const keys_window_visible = useRef(false);
     const current_key = useRef(null);  // Текущий активный ключ, которым шифруются сообщения, end ключа
@@ -218,7 +226,6 @@ export default function Messages() {  // В обычном react-native dialog-i
     const keys_list_ref = useRef();
     // dialog options (настройки диалога)
     const dialog_options_visible = useRef(false);
-    const is_superchat = useRef(false);
 
     // Верхняя панель настроек
     const help_block_animation_move = useRef(new Animated.Value(-50 - StatusBar.currentHeight)).current;  // Используем useRef, чтобы значение сохранялось между рендерами
@@ -507,7 +514,7 @@ export default function Messages() {  // В обычном react-native dialog-i
                     update_keys_stat(local_data, used_keys, unused_keys);
                     change_available_keys_counter(internal_data["max_keys_count_on_dialog"]);
                     change_unused_keys_counter(unused_keys.length);
-                    is_superchat.current = internal_data["is_superchat"];
+                    is_superchat = internal_data["is_superchat"];
                     set_load_key_manager(false);
                     clearInterval(interval);
                 }
@@ -528,7 +535,7 @@ export default function Messages() {  // В обычном react-native dialog-i
         update_keys_stat(local_data, used_keys, unused_keys);
         change_available_keys_counter(internal_data["max_keys_count_on_dialog"]);
         change_unused_keys_counter(unused_keys.length);
-        is_superchat.current = internal_data["is_superchat"];
+        is_superchat = internal_data["is_superchat"];
         set_load_key_manager(false);
     };
 
@@ -586,14 +593,31 @@ export default function Messages() {  // В обычном react-native dialog-i
     };
 
     const load_messages = async() => {
-        if (page_counter == null || is_loading) {
+        const decrypt_messages = async(messages) => {
+            /** Расшифровать содержимое новых сообщений */
+            let all_keys = await get_keys(dialog_id);
+            for (let r = 0; r < messages.length; r++) {
+                let tail = messages[r]["key_info"];
+                if (tail == null) {
+                    continue;
+                }
+                let full_key = all_keys[tail] || null;
+                if (full_key == null) {  // Ошибка при попытке расшифровать сообщение, полный ключ не нашёлся в памяти на устройстве
+                    messages[r]["decrypt_error"] = true;
+                    continue;
+                }
+                messages[r]["raw"] = await decrypt_message_item(messages[r]["raw"], full_key, tail);
+            }
+            return messages;
+        };
+        if (messages_page_counter == null || is_dialog_loading) {
             return true;
         }
-        set_loading(true);
+        set_dialog_loading(true);
         let t_val = await get_auth_token();
         let header = t_val == null ? {} : {"Authorization": "Token " + t_val};
         let req;
-        let current_page = page_counter == 1 ? "" : "?group=" + page_counter;
+        let current_page = messages_page_counter == 1 ? "" : "?group=" + messages_page_counter;
         try {
             req = await fetch(host + "/msg/dialog/" + dialog_id + "/" + current_page, {
                 method: "GET",
@@ -601,7 +625,7 @@ export default function Messages() {  // В обычном react-native dialog-i
                 headers: header,
             });
         } catch (_) {
-            set_loading(false);
+            set_dialog_loading(false);
             return false;
         }
         if (!req.ok) {
@@ -609,53 +633,69 @@ export default function Messages() {  // В обычном react-native dialog-i
                 router.replace("/login");
                 return true;
             }
-            set_error_code_or_reason(req.status);
-            set_invalid(true);
-            set_loading(false);
+            set_dialog_error(req.status);
+            set_dialog_loading(false);
             return true;
         }
         let data;
         try {
             data = await req.json();
         } catch (_) {
-            set_invalid(true);
-            set_loading(false);
+            set_dialog_error("json");
+            set_dialog_loading(false);
             return true;
         }
         if (!Object.hasOwn(data, "results") || !Object.hasOwn(data, "next") ||
             !Object.hasOwn(data, "previous")) {
-            set_invalid(true);
-            set_loading(false);
+            set_dialog_error("json");
+            set_dialog_loading(false);
             return true;
         }
         let messages_json_list = data["results"];
         for (var i = 0; i < messages_json_list.length - 1; i++) {
             if (!await is_valid_json(messages_json_list[i])) {
-                set_invalid(true);
-                set_loading(false);
+                set_dialog_error("json");
+                set_dialog_loading(false);
                 return true;
             }
         }
-        let loaded_messages = messages;
-        if (page_counter == 1 && load_messages.length) {
+        messages_json_list = await decrypt_messages(messages_json_list);
+        if (messages_page_counter == 1 && load_messages.length) {
             set_append_message(load_messages[0]);
         }
         if (data["next"] == null) {
-            set_page(null);
+            set_messages_page_counter(null);
         } else {
-            set_page(page_counter + 1);
+            set_messages_page_counter(messages_page_counter + 1);
         }
         if (!messages_json_list.length) {
-            set_loading(false);
+            set_dialog_loading(false);
             return true;
         }
+        let loaded_messages = messages;
         set_messages([...loaded_messages, ...messages_json_list]); // Всегда в пропс нужно ставить новый экземпляр, если тип мутабелен
-        set_loading(false);
+        set_dialog_loading(false);
         return true;
     };
 
     const send = async() => {
+        const encrypt = async(message) => {
+            if (!is_superchat) {
+                return message;
+            }
+            let tail = current_key.current;
+            let keys = await get_keys(dialog_id);
+            let key = keys[tail] || null;
+            if (key == null) {
+                throw Error("Ошибка импорта ключа"); // todo: Реши как быть в такой ситуации: удалить tail?, Показать Alert или ещё что...
+            }
+            return await encrypt_message_item(message, key, tail);
+        }
         if (is_active_send || draft == "") {
+            return
+        }
+        if (is_superchat && current_key.current == null) {
+            set_send_error("key_error");
             return
         }
         set_is_active_send_msg(true);
@@ -671,17 +711,18 @@ export default function Messages() {  // В обычном react-native dialog-i
                 method: "POST",
                 headers: header,
                 signal: AbortSignal.timeout(5000),
-                body: JSON.stringify({"raw": draft}),
+                body: JSON.stringify({
+                    "raw": await encrypt(draft), 
+                    "key": current_key.current}),
             });
-        } catch (error) {
+        } catch (_) {
             set_is_active_send_msg(false);
-            set_send_with_error(true);
+            set_send_error("network");
             return
         }
         if (r.status == 404) {
             set_is_active_send_msg(false);
-            set_invalid(true);
-            set_error_code_or_reason(404);
+            set_dialog_error(404);
             return
         }
         if (r.status == 401) {
@@ -692,26 +733,34 @@ export default function Messages() {  // В обычном react-native dialog-i
             data = await r.json();
         } catch (_) {
             set_is_active_send_msg(false);
-            set_invalid(true);
+            set_dialog_error("invalid json");
             return
         }
         if (r.status == 201) {
             if (!await is_valid_json(data)) {
-                set_invalid(true);
-                set_loading(false);
+                set_dialog_loading(false);
+                set_dialog_error("invalid json");
                 return
             }
             set_is_active_send_msg(false);
-            set_send_with_error(false);
+            set_send_error(null);
             let message_queue = messages;
+            if (data["key_info"] != null) {
+                let all_keys = await get_keys(dialog_id);
+                let current_key = all_keys[data["key_info"]];
+                if (current_key == null) {
+                    data["decrypt_error"] = true;
+                } else {
+                    data["raw"] = await decrypt_message_item(data["raw"], current_key, data["key_info"]);
+                }
+            }
             message_queue = [data, ...message_queue];
             set_messages(message_queue);
             change_draft("");
             return
         }
         set_is_active_send_msg(false);
-        set_invalid(true);
-        set_error_code_or_reason(r.status);
+        set_dialog_error("Код:" + r.status);
     };
 
     const load_keys_from_current_dialog = async() => {
@@ -833,10 +882,10 @@ export default function Messages() {  // В обычном react-native dialog-i
         refresh();
         if (Platform.OS != "web") {
             fade_send_block = Keyboard.addListener('keyboardDidShow', (_) => {
-                change_opacity(1);
+                keyboard_opacity.current = 1;
             });
             show_send_block = Keyboard.addListener('keyboardDidHide', (_) => {
-                change_opacity(0.1);
+                keyboard_opacity.current = 0.1;
             });
             if (Platform.OS == "android") { // В ios клавитура сдвигает в ...<KeyboardAvoidingView behavior=..., для андроид пришлось писать этот костыль
                 show_subscription = Keyboard.addListener('keyboardDidShow', (event) => {
@@ -853,9 +902,8 @@ export default function Messages() {  // В обычном react-native dialog-i
         return () => {
             interval == null ? null : clearInterval(interval);
             set_messages([]);
-            set_page(1);
-            set_invalid(false);
-            set_error_code_or_reason(null);
+            set_messages_page_counter(1);
+            set_dialog_error(null);
             set_keyboard_height(60);
             show_subscription ? show_subscription.remove() : null;
             hide_subscription ? hide_subscription.remove() : null;
@@ -880,14 +928,14 @@ export default function Messages() {  // В обычном react-native dialog-i
     }, [dialog_id]);
     return (
         <>
-            {is_loading ? (
+            {is_dialog_loading ? (
                 <View style={styles.container}>
                     <ActivityIndicator />
                 </View>
             ) : null}
-            {invalid_service ? (
+            {dialog_error != null ? (
                 <View style={styles.keys_container}>
-                    {rest_error_code_or_reason == 404 ? (
+                    {dialog_error == 404 ? (
                         <>
                             <Text>Диалог удалён</Text>
                             <Link href="/dialogs">Вернуться к списку диалогов</Link>
@@ -895,7 +943,7 @@ export default function Messages() {  // В обычном react-native dialog-i
                     ) : (
                         <>
                         <Text>Сервис недоступен</Text>
-                        <Text>{rest_error_code_or_reason}</Text>
+                        <Text>{dialog_error}</Text>
                         </>
                     )}
                 </View>
@@ -908,15 +956,17 @@ export default function Messages() {  // В обычном react-native dialog-i
                         <TouchableOpacity onPress={show_key_manager}>
                             <Image source={require("../assets/key_icon_vertical_150.png")} style={styles.help_line_img} />
                         </TouchableOpacity>
-                        <TouchableOpacity onPress={show_key_manager}>
-                            <Image source={require("../assets/dialog-settings.png")} style={styles.help_line_img} />
-                        </TouchableOpacity>
-                        <TouchableOpacity onPress={show_key_manager}>
-                            <Image source={require("../assets/group_chat_icon_128x128.png")} style={styles.help_line_img} />
-                        </TouchableOpacity>
-                        <TouchableOpacity onPress={show_key_manager}>
-                            <Image source={require("../assets/profile-96.png")} style={styles.help_line_img} />
-                        </TouchableOpacity>
+                        {/**
+                            <TouchableOpacity onPress={show_key_manager}>
+                                <Image source={require("../assets/dialog-settings.png")} style={styles.help_line_img} />
+                            </TouchableOpacity>
+                            <TouchableOpacity onPress={show_key_manager}>
+                                <Image source={require("../assets/group_chat_icon_128x128.png")} style={styles.help_line_img} />
+                            </TouchableOpacity>
+                            <TouchableOpacity onPress={show_key_manager}>
+                                <Image source={require("../assets/profile-96.png")} style={styles.help_line_img} />
+                            </TouchableOpacity>
+                        */}
                     </Animated.View>
                     <AnimatedPressable style={[styles.toggle_settings_button, {transform: [{translateY: Animated.add(help_block_animation_move, 60)}]},
                         {opacity: help_block_button_animation} ]} onPress={toggle_help_block}>
@@ -1031,14 +1081,17 @@ export default function Messages() {  // В обычном react-native dialog-i
                             )
                         )}
                     </Modal>
-
+                    {(error_send && error_send == "key_error"? 
+                        <Alert head_text={"Данный диалог шифруется"} text={"Сконфигурируйте ключ!"}
+                        close_handler={() => set_send_error(null)}  /> : null
+                    )}
                     <SafeAreaProvider style={styles.main}>
                         <SafeAreaView style={styles.safe_area} edges={['left', 'right']}>
                             <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}
                                 keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
                                 style={styles.list_body}>
                                 <FlatList data={messages} onEndReached={load_messages}
-                                    ListFooterComponent={is_loading ? <ActivityIndicator /> : null}
+                                    ListFooterComponent={is_dialog_loading ? <ActivityIndicator /> : null}
                                     ListHeaderComponent={<View style={{height: last_message_height}} />}
                                     renderItem={({item, index}) => {
                                         const next = index < messages.length - 1 ? messages[index + 1] : null;
@@ -1046,7 +1099,7 @@ export default function Messages() {  // В обычном react-native dialog-i
                                         }
                                     } onEndReachedThreshold={0.1} inverted={true} />
                             </KeyboardAvoidingView>
-                            <View style={[styles.actions, {bottom: keyboard_h, opacity: get_opacity == 1 ? 1 : 0.1}]}
+                            <View style={[styles.actions, {bottom: keyboard_h, opacity: keyboard_opacity.current == 1 ? 1 : 0.1}]}
                                 collapsable={false} // для андроид. запрещает перерисовывать при изменении opacity, что предотвращает повторное срабатывание
                                 >
                                 <TextInput style={styles.msg_input} multiline={true} onChangeText={change_draft} value={draft} />
