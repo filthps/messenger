@@ -1,18 +1,17 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { StyleSheet, Text, View, Button, ActivityIndicator, TextInput } from 'react-native';
 import { useRouter } from 'expo-router';
-import { host, set_auth_token, remove_auth_token } from './index';
+import { host, set_auth_token } from './index';
 
 
 export default function Login() {
     const [is_sending, set_send_is_active] = useState(false);
-    const [load_indicator, set_load_indicator] = useState(false);
     const [is_valid_api, set_available_service] = useState(true);
-    const [username, set_username] = useState("");
-    const [password, set_password] = useState("");
-    const [username_help_text, set_u_help_text] = useState(null);
-    const [passw_help_text, set_password_help_text] = useState(null);
-    const [form_error_text, set_f_error_text] = useState(null);
+    const [username, set_username] = useRef("");
+    const [password, set_password] = useRef("");
+    const [username_help_text, set_u_help_text] = useRef(null);
+    const [passw_help_text, set_password_help_text] = useRef(null);
+    const [form_error_text, set_f_error_text] = useRef(null);
     const router = useRouter();
 
     const send_form = async() => {
@@ -34,8 +33,8 @@ export default function Login() {
             set_send_is_active(false);
             return
         }
-        set_send_is_active(false);
         if (!response.ok & !response.status == 400) {
+            set_send_is_active(false);
             set_available_service(false);
             return
         }
@@ -43,6 +42,7 @@ export default function Login() {
         try {
             data = await response.json();
         } catch (error) {
+            set_send_is_active(false);
             set_available_service(false);
             return
             }
@@ -50,8 +50,9 @@ export default function Login() {
             !Object.hasOwn(data, "non_field_errors") &&
             !Object.hasOwn(data, "username") &&
             !Object.hasOwn(data, "password")) {
-            set_available_service(false);
-            return
+                set_send_is_active(false);
+                set_available_service(false);
+                return
         }
         if (Object.hasOwn(data, "token")) {
             await set_auth_token(data["token"]);
@@ -74,8 +75,9 @@ export default function Login() {
         if (Object.hasOwn(data, "password")) {
             set_password_help_text(data["password"]);
         }
+        set_send_is_active(false);
     };
-    const reset_error_on_field = async(field_prop) => {
+    const reset_error_on_field = (field_prop) => {
         field_prop(null);
         set_f_error_text(null);
         };
