@@ -12,56 +12,91 @@ export const generate_key = async() => {
 
 
 export const get_keys = async(dialog_id) => {
+    let data;
     if (Platform.OS == "web") {
-        let data = await localStorage.getItem("keys") || {};
-        return data[dialog_id] || {};
+        data = localStorage.getItem("keys") || "{}";
+    } else {
+        data = await SecureStore.getItemAsync("keys") || "{}";    
     }
-    let data = await SecureStore.getItemAsync("keys") || {};
-    return data[dialog_id] || {};
+    data = JSON.parse(data);
+    return Object.hasOwn(data, dialog_id) ?  data[dialog_id] : {};
 };
 
 
-export const get_current_key_tail = async(dialog_id) => {
+export const get_current_key_tail = (dialog_id) => {
+    if (!(typeof dialog_id == "string")) {
+        throw Error("Ожидалась строка");
+    }
     if (Platform.OS == "web") {
-            return await localStorage.getItem("current_" + dialog_id) || null;
+            return localStorage.getItem("current_" + dialog_id) || null;
         }
-        return await SecureStore.getItemAsync("current_" + dialog_id) || null;
+        return SecureStore.getItem("current_" + dialog_id) || null;
 };
 
 
-export const set_current_key_tail = async(dialog_id, key_tail, key) => {
-    if (!is_valid_key_and_tail(tail, key)) {
+export const set_current_active_key = async(dialog_id, key_tail, key) => {
+    if (!(typeof dialog_id == "string")) {
+        throw Error("Ожидалась строка");
+    }
+    if (!is_valid_key_and_tail(key_tail, key)) {
         throw Error("Ключ или tail недействителен");
     }
+    let total_keys_from_current_dialog = await get_keys(dialog_id);
+    if (!(Object.keys(total_keys_from_current_dialog).length)) {
+        throw Error("Нет ни одного ключа");
+    }
+    if (!(Object.hasOwn(total_keys_from_current_dialog, key_tail))) {
+        throw Error("Ключ не найден");
+    }
     if (Platform.OS == "web") {
-        let total_keys = await localStorage.getItem("keys") || {};
-        let total_keys_from_current_dialog = {};
-        if (dialog_id in total_keys) {
-            total_keys_from_current_dialog = total_keys[dialog_id];
-            total_keys_from_current_dialog[key_tail] = key;
-            if (Object.keys(total_keys_from_current_dialog).length > MAX_KEYS_COUNT) {
-                delete total_keys_from_current_dialog[Object.keys(total_keys_from_current_dialog)[0]];
-            }
-        } else {
-            total_keys[dialog_id] = {key_tail: key};
-        }
-        localStorage.setItem("keys", total_keys);
-        localStorage.setItem("current_" + dialog_id) || null;
+        localStorage.setItem("current_" + dialog_id, key_tail);        
+    } else {
+        SecureStore.setItemAsync("current_" + dialog_id, key_tail);
+    }
+};
+
+
+export const remove_current_active_key = async(dialog_id) => {
+    if (!(typeof dialog_id == "string")) {
+        throw Error("Ожидалась строка");
+    }
+    if (Platform.OS == "web") {
+        localStorage.removeItem("current_" + dialog_id);        
+    } else {
+        SecureStore.deleteItemAsync("current_" + dialog_id);
+    }
+};
+
+
+export const add_key = async(dialog, key) => {
+    if (!(typeof dialog == "string")) {
+        throw Error("Ожидалась строка");
+    }
+    let t = key.slice(-7);
+    if (!is_valid_key_and_tail(t, key)) {
+        throw Error("Ключ невалиден");
+    }
+    let data;
+    if (Platform.OS == "web") {
+        data = localStorage.getItem("keys") || "{}";
+    } else {
+        data = await SecureStore.getItemAsync("keys") || "{}";
+    }
+    data = JSON.parse(data);
+    let dialog_data = Object.hasOwn(data, dialog) ? data[dialog] : {};
+    if (Object.keys(dialog_data).length) {
+        dialog_data[t] = key;
+    } else {
+        data[dialog] = {[t]: key}
+    }
+    if (Object.keys(dialog_data).length > MAX_KEYS_COUNT) {
+        delete dialog_data[Object.keys(dialog_data)[0]];
+    }
+    if (Platform.OS == "web") {
+        localStorage.setItem("keys", JSON.stringify(data))
         return
     }
-    total_keys = await SecureStore.getItemAsync("keys") || {};
-    let total_keys_from_current_dialog = {};
-    if (dialog_id in total_keys) {
-        total_keys_from_current_dialog = total_keys[dialog_id];
-        total_keys_from_current_dialog[key_tail] = key;
-        if (Object.keys(total_keys_from_current_dialog).length > MAX_KEYS_COUNT) {
-            delete total_keys_from_current_dialog[Object.keys(total_keys_from_current_dialog)[0]];
-        }
-    } else {
-        total_keys[dialog_id] = {key_tail: key};
-    }
-    SecureStore.setItemAsync("keys", total_keys);
-    SecureStore.setItemAsync("current_" + dialog_id);
+    SecureStore.setItemAsync("keys", JSON.stringify(data));
 };
 
 
@@ -88,16 +123,35 @@ export const is_valid_key_and_tail = (key_tail, full_key=null) => {
 
 
 export const encrypt_message_item = async(body, key, tail) => {
-    if (!is_valid_key_and_tail(key_tail, key)) {
+    if (!is_valid_key_and_tail(tail, key)) {
         throw Error("Ключ или его хвост невалидны");
     }
-    return await lib.AES.encrypt(body, key);
+    // 1. Убираем дефисы из UUIDv4, получая валидную 32-символьную hex-строку (16 байт)
+    const clean_key = key.replace(/-/g, '');
+    // 2. Импортируем ключ как 128-битный AES-ключ
+    const encryption_key = await Crypto.AESEncryptionKey.import(clean_key, 'hex');
+    // 3. Кодируем текст сообщения в байты
+    const plaintext_bytes = new TextEncoder().encode(body);
+    // 4. Шифруем данные
+    const sealed_data = await Crypto.aesEncryptAsync(plaintext_bytes, encryption_key);
+    // 5. Возвращаем результат в base64
+    const combined_bytes = await sealed_data.combined();
+    return btoa(String.fromCharCode(...combined_bytes));
 };
 
 
-export const decrypt_message_item = async(encrypted, key) => {
-    if (!is_valid_key_and_tail(key_tail, key)) {
+export const decrypt_message_item = async(encrypted, key, tail) => {
+    if (!is_valid_key_and_tail(tail, key)) {
         throw Error("Ключ или его хвост невалидны");
     }
-    return await lib.AES.decrypt(encrypted, key);
+    // готовим ключ
+    let ready_key = await Crypto.AESEncryptionKey.import(key.replace(/-/g, ""), "hex"); 
+    // base64 в bytes
+    const encoded_bytes = atob(encrypted);
+    const arr_buffer = Uint8Array.from(encoded_bytes, char => char.charCodeAt(0));
+    const sealed_data_obj = Crypto.AESSealedData.fromCombined(arr_buffer);
+    // Расшифровываем сообщение по ключу
+    const decode_msg_int_bytes = await Crypto.aesDecryptAsync(sealed_data_obj, ready_key);
+    const decoded_msg_str = new TextDecoder().decode(decode_msg_int_bytes);
+    return decoded_msg_str;
 };
